@@ -1,0 +1,18 @@
+$:
+  vscode:
+    - runner:
+        cpus: 4
+        # tags: cnb:arch:amd64:gpu
+      docker:
+        image: docker.cnb.cool/oxzk.co/full-stack:latest
+      services:
+        - docker
+        - vscode
+      stages:
+        - name: cnb-init
+          script: |
+            bash ~/.cnb/cnb.sh start
+      endStages:
+        - name: cnb-end
+          script: |
+            bash ~/.cnb/cnb.sh destroy
