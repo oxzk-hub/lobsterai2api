@@ -37,10 +37,7 @@ class CheckinService:
             try:
                 remain = await self.container.upstream.quota(entry.auth)
                 if remain is not None:
-                    entry.credits = remain
-                    if remain > 0 and not entry.disabled and entry.cooldown_kind == "hard_credit":
-                        entry.until, entry.reason, entry.errors, entry.cooldown_kind = 0, "", 0, ""
-                    await self.container.pool.save()
+                    await self.container.pool.update_credits(entry, remain)
                     result["credits"] = remain
             except Exception as exc:
                 result["quota"] = "error"

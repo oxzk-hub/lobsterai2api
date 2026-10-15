@@ -26,6 +26,17 @@ class AccountPersistence(Protocol):
         """写入账号池运行状态。"""
         ...
 
+    async def update_account_state(
+        self,
+        uid: str,
+        updates: dict[str, Any],
+        *,
+        error_delta: int = 0,
+        reset_errors: bool = False,
+    ) -> dict[str, Any]:
+        """原子合并单个账号的状态并返回更新后的状态。"""
+        ...
+
     async def close(self) -> None:
         """关闭底层连接。"""
         ...

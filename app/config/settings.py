@@ -14,8 +14,14 @@ def duration(value: Any, default: float) -> float:
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return default
         try:
-            return float(value[:-1]) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[value[-1]]
+            units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+            if value[-1] in units:
+                return float(value[:-1]) * units[value[-1]]
+            return float(value)
         except (ValueError, KeyError, IndexError):
             pass
     return default

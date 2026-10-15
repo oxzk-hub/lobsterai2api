@@ -185,7 +185,7 @@ class Upstream:
     async def chat(self, auth: Auth, body: bytes) -> httpx.Response:
         payload = json.loads(body)
         payload["stream"] = True
-        if payload.get("tool_choice") in (None, "", "none"):
+        if payload.get("tool_choice") in (None, ""):
             payload.pop("tool_choice", None)
         response = await self.api_request(auth, "POST", "/api/proxy/v1/chat/completions", json=payload)
         if response.status_code >= 400:
@@ -199,7 +199,7 @@ class Upstream:
             await self.refresh(auth)
         payload = json.loads(body)
         payload["stream"] = True
-        if payload.get("tool_choice") in (None, "", "none"):
+        if payload.get("tool_choice") in (None, ""):
             payload.pop("tool_choice", None)
         headers = self.headers(auth)
         request = self.client.build_request(

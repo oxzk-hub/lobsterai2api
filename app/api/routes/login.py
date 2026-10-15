@@ -13,7 +13,8 @@ router = APIRouter()
 @router.get("/auth/login")
 async def login(request: Request) -> dict[str, Any]:
     """开始浏览器登录, state 写入 Redis。"""
-    return success(await get_login_service(request).start())
+    callback_url = str(request.url_for("login_callback"))
+    return success(await get_login_service(request).start(callback_url))
 
 
 @router.get("/auth/callback")

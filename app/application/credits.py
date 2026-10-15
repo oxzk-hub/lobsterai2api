@@ -37,9 +37,8 @@ class CreditService:
                 result["credits"] = credits
                 result["status"] = "ok" if credits is not None else "unavailable"
                 if credits is not None:
-                    entry.credits = credits
+                    await self.container.pool.update_credits(entry, credits)
                     total += credits
-                    await self.container.pool.save()
             except Exception as exc:
                 result["status"] = "error"
                 result["error"] = str(exc)

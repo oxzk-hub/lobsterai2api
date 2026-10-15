@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.application.response_format import chat_usage_to_response, reasoning_item
+from app.application.sse import ChatStreamError
 
 
 _DONE = b"data: [DONE]\n\n"
@@ -210,8 +211,8 @@ class ResponsesStreamTranslator:
     - ``content`` 增量 → assistant 消息项 + ``response.output_text.delta``;
     - ``tool_calls`` 增量 → function_call 输出项 + ``response.function_call_arguments.delta``,
       上游内部名还原为命名空间工具名;
-    - 收到 ``finish_reason=tool_calls`` 或流结束时, 按输出顺序补齐全部 done 事件,
-      最后发送 ``response.completed`` 与 ``[DONE]`` 哨兵。
+    - 收到 ``finish_reason=tool_calls`` 或 ``[DONE]`` 时, 按输出顺序补齐全部 done 事件;
+      仅在收到候选数据和 ``[DONE]`` 后发送 ``response.completed``, 否则报告流异常。
 
     输出项都是惰性创建的: 首个对应增量到达时才发出 added 事件,
     因此事件顺序天然与官方 API 的输出顺序一致（思维链在前, 消息与工具调用在后）。
@@ -245,6 +246,7 @@ class ResponsesStreamTranslator:
         self._sequence = 0
         self._output_count = 0
         self._usage: dict[str, Any] | None = None
+        self._finish_reason: str | None = None
         self._reasoning_item: _ReasoningItem | None = None
         self._message_item: _MessageItem | None = None
         self._tool_calls: dict[int, _ToolCallItem] = {}
@@ -284,7 +286,13 @@ class ResponsesStreamTranslator:
         )
         yield self._emit("response.created", response=opened)
         yield self._emit("response.in_progress", response=opened)
+        received_choice = False
+        received_done = False
         async for line in self._lines:
+            # 以协议结束标记为准, 避免把正常 EOF 或空响应误判为生成成功.
+            if line.startswith("data:") and line[5:].strip() == "[DONE]":
+                received_done = True
+                break
             chunk = self._parse_line(line)
             if chunk is None:
                 continue
@@ -293,17 +301,25 @@ class ResponsesStreamTranslator:
             if isinstance(chunk.get("usage"), dict):
                 self._usage = chunk["usage"]
             for choice in chunk.get("choices") or []:
+                received_choice = True
                 for event in self._consume_choice(choice):
                     yield event
+        if not received_choice:
+            raise ChatStreamError("upstream returned an empty chat stream")
+        if not received_done:
+            raise ChatStreamError("upstream chat stream ended before [DONE]")
         for event in self._finish_output():
             yield event
+        response_status = "incomplete" if self._finish_reason == "length" else "completed"
         completed = _response_object(
-            self._response_id, self._model, self._created_at, "completed",
+            self._response_id, self._model, self._created_at, response_status,
             [self._done_payload(item) for item in self._items()],
             reasoning=self._reasoning,
             usage=chat_usage_to_response(self._usage),
         )
-        yield self._emit("response.completed", response=completed)
+        if response_status == "incomplete":
+            completed["incomplete_details"] = {"reason": "max_output_tokens"}
+        yield self._emit("response.incomplete" if response_status == "incomplete" else "response.completed", response=completed)
         yield _DONE
 
     @staticmethod
@@ -345,6 +361,8 @@ class ResponsesStreamTranslator:
             # 上游声明工具调用结束: 立即按输出顺序补齐全部 done 事件,
             # 之后即使还有增量到达也只会被已关闭的项忽略。
             events.extend(self._finish_output())
+        if choice.get("finish_reason"):
+            self._finish_reason = str(choice["finish_reason"])
         return events
 
     def _consume_reasoning_delta(self, text: str) -> list[bytes]:

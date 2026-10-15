@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from redis.asyncio import Redis
+from redis.exceptions import WatchError
 
 from app.domain.auth import Auth, parse_auth
 
@@ -124,6 +125,47 @@ class RedisAccountStore:
     async def save_state(self, data: dict[str, Any]) -> None:
         """写入账号池运行状态。"""
         await self._redis.set(self.data_key, json.dumps(data, ensure_ascii=False))
+
+    async def update_account_state(
+        self,
+        uid: str,
+        updates: dict[str, Any],
+        *,
+        error_delta: int = 0,
+        reset_errors: bool = False,
+    ) -> dict[str, Any]:
+        """用 Redis 乐观事务更新单账号状态, 避免不同请求覆盖彼此的修改。"""
+        for _attempt in range(32):
+            async with self._redis.pipeline() as pipe:
+                await pipe.watch(self.data_key)
+                payload = await pipe.get(self.data_key)
+                try:
+                    data = json.loads(payload) if payload else {}
+                except json.JSONDecodeError:
+                    data = {}
+                if not isinstance(data, dict):
+                    data = {}
+                accounts = data.get("accounts")
+                if not isinstance(accounts, dict):
+                    accounts = {}
+                    data["accounts"] = accounts
+                previous = accounts.get(uid)
+                account = dict(previous) if isinstance(previous, dict) else {}
+                account.update(updates)
+                if reset_errors:
+                    account["errors"] = 0
+                elif error_delta:
+                    account["errors"] = max(0, int(account.get("errors", 0)) + error_delta)
+                account["revision"] = int(account.get("revision", 0)) + 1
+                accounts[uid] = account
+                pipe.multi()
+                pipe.set(self.data_key, json.dumps(data, ensure_ascii=False))
+                try:
+                    await pipe.execute()
+                except WatchError:
+                    continue
+                return account
+        raise RuntimeError("could not update account state after repeated Redis conflicts")
 
     def login_key(self, state: str) -> str:
         """登录尝试键。"""

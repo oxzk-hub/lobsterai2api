@@ -35,20 +35,36 @@ class ChatService:
         """判断错误是否由请求参数导致, 因而不应切换账号重试。"""
         return error.kind == "client" and error.status in (400, 422)
 
+    @staticmethod
+    def _session_key(payload: dict[str, Any]) -> str | None:
+        """提取客户端会话标识, 让账号切换时继续使用同一上游会话。"""
+        for field in ("session_id", "conversation_id", "conversationId", "previous_response_id"):
+            value = payload.get(field)
+            if value is not None and str(value).strip():
+                return f"{field}:{str(value).strip()}"
+        metadata = payload.get("metadata")
+        if isinstance(metadata, dict):
+            value = metadata.get("session_id") or metadata.get("conversation_id")
+            if value is not None and str(value).strip():
+                return f"metadata.session_id:{str(value).strip()}"
+        return None
+
     async def _upstream_response(self, payload: dict[str, Any]) -> httpx.Response:
         if not self.services.upstream:
             raise RuntimeError("upstream base URL is not configured")
         body = json.dumps(await self._with_mapped_model(payload), ensure_ascii=False).encode()
+        session_key = self._session_key(payload)
         tried: set[str] = set()
         last_error: Exception | None = None
         for _ in range(self.services.settings.max_account_retries):
-            entry = self.services.pool.pick(tried)
+            entry = self.services.pool.pick(tried, session_key)
             if not entry:
                 break
             tried.add(entry.auth.uid)
             try:
                 response = await self.services.upstream.chat(entry.auth, body)
-                entry.errors = 0
+                self.services.pool.bind_session(session_key, entry)
+                await self.services.pool.clear_errors(entry)
                 return response
             except UpstreamError as exc:
                 # 请求自身导致的 4xx 与账号无关, 重试只会重复失败并污染账号状态。
@@ -65,10 +81,11 @@ class ChatService:
         if not self.services.upstream:
             raise RuntimeError("upstream base URL is not configured")
         body = json.dumps(await self._with_mapped_model(payload), ensure_ascii=False).encode()
+        session_key = self._session_key(payload)
         tried: set[str] = set()
         last_error: Exception | None = None
         for _ in range(self.services.settings.max_account_retries):
-            entry = self.services.pool.pick(tried)
+            entry = self.services.pool.pick(tried, session_key)
             if not entry:
                 break
             tried.add(entry.auth.uid)
@@ -76,7 +93,8 @@ class ChatService:
             try:
                 async with self.services.upstream.chat_stream(entry.auth, body) as response:
                     entered = True
-                    entry.errors = 0
+                    self.services.pool.bind_session(session_key, entry)
+                    await self.services.pool.clear_errors(entry)
                     yield response
                     return
             except UpstreamError as exc:

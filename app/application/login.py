@@ -46,15 +46,14 @@ class LoginService:
         """
         self.container = container
 
-    async def start(self) -> dict[str, Any]:
+    async def start(self, redirect_uri: str | None = None) -> dict[str, Any]:
         """生成登录 URL 与一次性 state, 并写入 Redis。"""
         portal = self.container.settings.login_portal.rstrip("/")
         if not portal:
             raise RuntimeError("LB2A_LOGIN_PORTAL is empty")
 
         state = secrets.token_urlsafe(24)
-        port = secrets.randbelow(64512) + 1024
-        redirect_uri = f"http://127.0.0.1:{port}/auth/callback"
+        redirect_uri = redirect_uri or "http://127.0.0.1:8367/auth/callback"
         attempt = LoginAttempt(
             state=state,
             uuid=str(uuid_module.uuid4()),

@@ -24,16 +24,10 @@ async def aggregate_sse(text: str) -> dict[str, Any]:
         "object": "chat.completion",
         "created": int(time.time()),
         "model": "",
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": ""},
-            "finish_reason": "stop",
-        }],
+        "choices": [],
     }
-    content: list[str] = []
-    reasoning: list[str] = []
-    tool_calls: dict[int, dict[str, Any]] = {}
-    received_chunk = False
+    choices: dict[int, dict[str, Any]] = {}
+    received_choice = False
     completed = False
     for line in text.splitlines():
         if not line.startswith("data:"):
@@ -54,21 +48,30 @@ async def aggregate_sse(text: str) -> dict[str, Any]:
             error = chunk["error"]
             message = error.get("message") if isinstance(error, dict) else str(error)
             raise ChatStreamError(message or "upstream stream error")
-        received_chunk = True
         result["id"] = chunk.get("id", result["id"])
         result["created"] = chunk.get("created", result["created"])
         result["model"] = chunk.get("model", result["model"])
         if isinstance(chunk.get("usage"), dict):
             result["usage"] = chunk["usage"]
         for choice in chunk.get("choices", []):
+            received_choice = True
+            index = int(choice.get("index", 0))
+            state = choices.setdefault(index, {
+                "index": index,
+                "message": {"role": "assistant", "content": ""},
+                "content": [],
+                "reasoning": [],
+                "tool_calls": {},
+                "finish_reason": "stop",
+            })
             delta = choice.get("delta") or {}
             if delta.get("role"):
-                result["choices"][0]["message"]["role"] = delta["role"]
-            content.append(_sse_text(delta.get("content")))
-            reasoning.append(_sse_text(delta.get("reasoning_content")))
+                state["message"]["role"] = delta["role"]
+            state["content"].append(_sse_text(delta.get("content")))
+            state["reasoning"].append(_sse_text(delta.get("reasoning_content")))
             for tool_call in delta.get("tool_calls") or []:
                 index = int(tool_call.get("index", 0))
-                current = tool_calls.setdefault(index, {
+                current = state["tool_calls"].setdefault(index, {
                     "id": "",
                     "type": "function",
                     "function": {"name": "", "arguments": ""},
@@ -80,15 +83,22 @@ async def aggregate_sse(text: str) -> dict[str, Any]:
                 current_function["name"] += _sse_text(function.get("name"))
                 current_function["arguments"] += _sse_text(function.get("arguments"))
             if choice.get("finish_reason"):
-                result["choices"][0]["finish_reason"] = choice["finish_reason"]
-    if not received_chunk:
+                state["finish_reason"] = choice["finish_reason"]
+    if not received_choice:
         raise ChatStreamError("upstream returned an empty chat stream")
     if not completed:
         raise ChatStreamError("upstream chat stream ended before [DONE]")
-    message = result["choices"][0]["message"]
-    message["content"] = "".join(content)
-    if any(reasoning):
-        message["reasoning_content"] = "".join(reasoning)
-    if tool_calls:
-        message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
+    for index in sorted(choices):
+        state = choices[index]
+        message = state["message"]
+        message["content"] = "".join(state["content"])
+        if any(state["reasoning"]):
+            message["reasoning_content"] = "".join(state["reasoning"])
+        if state["tool_calls"]:
+            message["tool_calls"] = [state["tool_calls"][call_index] for call_index in sorted(state["tool_calls"])]
+        result["choices"].append({
+            "index": index,
+            "message": message,
+            "finish_reason": state["finish_reason"],
+        })
     return result

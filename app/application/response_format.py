@@ -280,6 +280,9 @@ def chat_to_response(
     choice = (chat.get("choices") or [{}])[0]
     message = choice.get("message") or {}
     text = message.get("content") or ""
+    finish_reason = choice.get("finish_reason")
+    status = "incomplete" if finish_reason == "length" else "completed"
+    incomplete_details = {"reason": "max_output_tokens"} if status == "incomplete" else None
     response_id = chat.get("id", f"resp_{time.time_ns()}")
     output: list[dict[str, Any]] = []
     if message.get("reasoning_content"):
@@ -312,12 +315,12 @@ def chat_to_response(
         "id": response_id,
         "object": "response",
         "created_at": chat.get("created", int(time.time())),
-        "status": "completed",
+        "status": status,
         "model": chat.get("model") or requested_model,
         "output": output,
         "output_text": text,
         "error": None,
-        "incomplete_details": None,
+        "incomplete_details": incomplete_details,
         "metadata": {},
         "parallel_tool_calls": True,
         "reasoning": reasoning or {"effort": None, "summary": None},

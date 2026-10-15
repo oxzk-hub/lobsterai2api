@@ -62,8 +62,7 @@ class Scheduler:
                 await self.container.upstream.refresh(entry.auth)
             except UpstreamError as exc:
                 if exc.kind == "session_dead":
-                    entry.disabled, entry.reason = True, "refresh session dead"
-                    await self.container.pool.save()
+                    await self.container.pool.disable(entry, "refresh session dead")
                 else:
                     log.warning("token refresh failed for %s: %s", entry.auth.uid, exc)
             except Exception:
